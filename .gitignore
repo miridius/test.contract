@@ -1,0 +1,23 @@
+# Clojure
+.cpcache/
+.clj-kondo/
+.lsp/
+target/
+classes/
+
+# Editor
+.idea/
+*.iml
+.vscode/
+.calva/
+*.swp
+*.swo
+*~
+.nrepl-port
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Clojure CLI install script (if present)
+linux-install.sh
