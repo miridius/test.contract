@@ -114,11 +114,8 @@
                           (c/return #{:ok}
                                     :next-state (update state :submitted conj id)))
                         :args (fn [_state]
-                                (gen/tuple (gen/fmap (fn [_] (swap! id-counter inc))
-                                                    (gen/return nil))
-                                           gen/nat))
-                        :refresh-args (fn [[_id value]]
-                                        [(swap! id-counter inc) value]))]
+                                (gen/tuple (c/single-use #(swap! id-counter inc))
+                                           gen/nat)))]
     :initial-state (fn [] {:submitted #{}})}))
 
 (defn external-impl-rejects-dupes []
@@ -135,13 +132,14 @@
     (is (:pass? ret) ret)))
 
 (deftest refresh-calls-generates-fresh-args
-  (let [calls [{:method (first (:methods external-model))
-                :args [999 42]
+  (let [su-999 (c/->SingleUse 999 #(swap! id-counter inc))
+        calls [{:method (first (:methods external-model))
+                :args [su-999 42]
                 :return (c/return #{:ok})}
                {:method (first (:methods external-model))
-                :args [999 7]
+                :args [su-999 7]
                 :return (c/return #{:ok})}]
         refreshed (c/refresh-calls external-model calls)
-        ids (map (comp first :args) refreshed)]
+        ids (map (comp :value first :args) refreshed)]
     (is (= 2 (count (set ids))) "refreshed calls should have distinct IDs")
     (is (every? #(not= 999 %) ids) "refreshed IDs should differ from originals")))
