@@ -98,7 +98,7 @@
     (is (thrown? Exception (create-file bad-mock "/foo")))))
 
 ;; Simulates an external API that rejects duplicate IDs (e.g. Form3 409 Conflict).
-;; Without refresh-args, shrink attempts would replay the same UUIDs and get
+;; Without method-level cleanup, shrink attempts would replay the same IDs and get
 ;; conflicts instead of surfacing the real failure.
 (defprotocol ExternalAPI
   :extend-via-metadata true
@@ -114,8 +114,11 @@
                           (c/return #{:ok}
                                     :next-state (update state :submitted conj id)))
                         :args (fn [_state]
-                                (gen/tuple (c/single-use #(swap! id-counter inc))
-                                           gen/nat)))]
+                                (gen/tuple (gen/fmap (fn [_] (swap! id-counter inc))
+                                                    (gen/return nil))
+                                           gen/nat))
+                        :cleanup (fn [[_id value]]
+                                   [(swap! id-counter inc) value]))]
     :initial-state (fn [] {:submitted #{}})}))
 
 (defn external-impl-rejects-dupes []
@@ -127,19 +130,18 @@
           (do (swap! seen conj id)
               :ok))))))
 
-(deftest refresh-args-prevents-conflicts
+(deftest cleanup-prevents-conflicts
   (let [ret (tc/quick-check 100 (c/verify external-model external-impl-rejects-dupes))]
     (is (:pass? ret) ret)))
 
 (deftest refresh-calls-generates-fresh-args
-  (let [su-999 (c/->SingleUse 999 #(swap! id-counter inc))
-        calls [{:method (first (:methods external-model))
-                :args [su-999 42]
+  (let [calls [{:method (first (:methods external-model))
+                :args [999 42]
                 :return (c/return #{:ok})}
                {:method (first (:methods external-model))
-                :args [su-999 7]
+                :args [999 7]
                 :return (c/return #{:ok})}]
         refreshed (c/refresh-calls external-model calls)
-        ids (map (comp :value first :args) refreshed)]
+        ids (map (comp first :args) refreshed)]
     (is (= 2 (count (set ids))) "refreshed calls should have distinct IDs")
     (is (every? #(not= 999 %) ids) "refreshed IDs should differ from originals")))

@@ -22,8 +22,8 @@
     "Return a generator for arguments to call the method in the current state. Do not include `this`")
   (precondition [this state args]
     "Return truthy if it is valid to call this method with these args in the current state.")
-  (refresh-args [this args]
-    "Given args, return refreshed args with new unique values (e.g. fresh UUIDs). Used during shrinking in verify to avoid conflicts with external APIs."))
+  (cleanup-args [this args]
+    "Called during shrink replays before re-executing a method. Given the args from the previous run, return new args suitable for re-execution. Use this to generate fresh unique values (e.g. new UUIDs) or clean up external resources created by a prior run. Return the args unchanged if no cleanup is needed."))
 
 (defprotocol Model
   :extend-via-metadata true

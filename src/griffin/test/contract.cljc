@@ -8,49 +8,6 @@
             [griffin.test.contract.mock :as mock]
             [griffin.test.contract.protocol :as p]))
 
-(defrecord SingleUse [value thunk])
-
-(defn single-use
-  "Creates a generator that produces a fresh value on every generation
-  by calling thunk (a zero-arg fn). The value does not shrink.
-
-  During shrink replays, the framework calls thunk again to get a fresh
-  value, avoiding conflicts with external APIs that reject duplicates.
-
-  Usage in :args —
-    (gen/tuple (c/single-use #(swap! id-counter inc)) gen/nat)
-
-  The method function receives the unwrapped value, not the SingleUse record."
-  [thunk]
-  (gen/no-shrink
-   (gen/fmap (fn [_] (->SingleUse (thunk) thunk))
-             (gen/return nil))))
-
-(defn- unwrap-single-use
-  "If x is a SingleUse, return its value. Otherwise return x."
-  [x]
-  (if (instance? SingleUse x)
-    (:value x)
-    x))
-
-(defn- unwrap-args
-  "Unwrap any SingleUse values in an args vector."
-  [args]
-  (mapv unwrap-single-use args))
-
-(defn- refresh-single-use
-  "If x is a SingleUse, call its thunk to produce a fresh value.
-  Otherwise return x as-is."
-  [x]
-  (if (instance? SingleUse x)
-    (->SingleUse ((:thunk x)) (:thunk x))
-    x))
-
-(defn- refresh-args-single-use
-  "Walk args and regenerate any SingleUse values."
-  [args]
-  (mapv refresh-single-use args))
-
 (defn deep-merge
   "Like merge, but merges maps recursively.
   Copied from griffin.util.map"
@@ -105,7 +62,7 @@
   requires - (fn [state] -> bool) if provided, return whether it's valid to call this method in the current state. Defaults to `true`
   args - (fn [state] -> generator), returns a generator for args to the method. Do not include `this`
   precondition - (fn [state args] -> bool). Return truthy if it's valid to call this method with these args in the current state."
-  [v f & {:keys [requires precondition args refresh-args]}]
+  [v f & {:keys [requires precondition args cleanup]}]
   (validate! var? v)
   (validate! ifn? f)
   (validate! ifn? args)
@@ -125,9 +82,9 @@
                        (if precondition
                          (precondition state args)
                          true))
-     `p/refresh-args (fn [_ args]
-                       (if refresh-args
-                         (refresh-args args)
+     `p/cleanup-args (fn [_ args]
+                       (if cleanup
+                         (cleanup args)
                          args))}))
 
 #?(:clj (defn ref? [x]
@@ -251,7 +208,7 @@
                       (cleanup impl calls)))})))
 
 (defn gen-valid-args [state method]
-  (gen/such-that (fn [args] (p/precondition method state (unwrap-args args)))
+  (gen/such-that (fn [args] (p/precondition method state args))
                  (p/args method state)))
 
 (defn gen-call
@@ -262,12 +219,12 @@
               (gen/fmap (fn [args]
                           {:method method
                            :args args
-                           :return (p/return method state (unwrap-args args))}) (gen-valid-args state method)))))
+                           :return (p/return method state args)}) (gen-valid-args state method)))))
 
 (defn valid-call-sequence? [calls]
   (every? (fn [call]
             (and (p/requires (:method call) (:state call))
-                 (p/precondition (:method call) (:state call) (unwrap-args (:args call))))) calls))
+                 (p/precondition (:method call) (:state call) (:args call)))) calls))
 
 (defn gen-calls-
   "Given a model instance, return a sequence of maps containing
@@ -290,15 +247,14 @@
   "Given a seq of calls where a call has been removed, recompute state. Returns the calls or nil if a precondition failed"
   [model _calls]
   (reduce (fn [{:keys [calls state]} {:keys [args method] :as _call}]
-            (let [plain-args (unwrap-args args)]
-              (when (and calls
-                         (p/requires method state)
-                         (p/precondition method state plain-args))
-                (let [ret (p/return method state plain-args)]
-                  {:calls (conj calls {:method method
-                                       :args args
-                                       :return ret})
-                   :state (p/next-state ret)}))))
+            (when (and calls
+                       (p/requires method state)
+                       (p/precondition method state args))
+              (let [ret (p/return method state args)]
+                {:calls (conj calls {:method method
+                                     :args args
+                                     :return ret})
+                 :state (p/next-state ret)})))
           {:calls []
            :state (p/initial-state model)}))
 
@@ -345,23 +301,17 @@
                                     (doall (gen/sample (p/gen (:return c))))))))))
 
 (defn refresh-calls
-  "Given a model and a seq of calls, refresh any SingleUse args and
-  recompute state/returns. Used during shrinking in verify to avoid
-  conflicts with external APIs that reject duplicate IDs (e.g. 409
-  Conflict).
-
-  Also calls refresh-args on the method if defined (for backwards
-  compatibility)."
+  "Given a model and a seq of calls, run each method's cleanup to
+  prepare args for re-execution, then recompute state/returns. Used
+  during shrink replays in verify to avoid conflicts with external
+  APIs that reject duplicate IDs (e.g. 409 Conflict)."
   [model calls]
   (:calls
    (reduce (fn [{:keys [calls state]} {:keys [method args]}]
-             (let [refreshed-args (-> args
-                                      refresh-args-single-use
-                                      (#(p/refresh-args method %)))
-                   plain-args (unwrap-args refreshed-args)
-                   ret (p/return method state plain-args)]
+             (let [cleaned-args (p/cleanup-args method args)
+                   ret (p/return method state cleaned-args)]
                {:calls (conj calls {:method method
-                                    :args refreshed-args
+                                    :args cleaned-args
                                     :return ret})
                 :state (p/next-state ret)}))
            {:calls []
@@ -387,7 +337,7 @@
                   (try
                     (every? (fn [call]
                               (let [{:keys [method args return]} call
-                                    impl-ret (apply (p/var method) impl (unwrap-args args))
+                                    impl-ret (apply (p/var method) impl args)
                                     ret (and return
                                              (p/spec return)
                                              (s/spec (p/spec return))
