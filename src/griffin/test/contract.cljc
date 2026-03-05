@@ -62,7 +62,7 @@
   requires - (fn [state] -> bool) if provided, return whether it's valid to call this method in the current state. Defaults to `true`
   args - (fn [state] -> generator), returns a generator for args to the method. Do not include `this`
   precondition - (fn [state args] -> bool). Return truthy if it's valid to call this method with these args in the current state."
-  [v f & {:keys [requires precondition args]}]
+  [v f & {:keys [requires precondition args refresh-args]}]
   (validate! var? v)
   (validate! ifn? f)
   (validate! ifn? args)
@@ -81,7 +81,11 @@
      `p/precondition (fn [_ state args]
                        (if precondition
                          (precondition state args)
-                         true))}))
+                         true))
+     `p/refresh-args (fn [_ args]
+                       (if refresh-args
+                         (refresh-args args)
+                         args))}))
 
 #?(:clj (defn ref? [x]
           (instance? clojure.lang.Ref x)))
@@ -296,6 +300,24 @@
                                     (p/gen (:return c))
                                     (doall (gen/sample (p/gen (:return c))))))))))
 
+(defn refresh-calls
+  "Given a model and a seq of calls, refresh args via each method's
+  refresh-args and recompute state/returns. Used during shrinking in
+  verify to avoid conflicts with external APIs that reject duplicate
+  IDs (e.g. 409 Conflict)."
+  [model calls]
+  (:calls
+   (reduce (fn [{:keys [calls state]} {:keys [method args]}]
+             (let [refreshed-args (p/refresh-args method args)
+                   ret (p/return method state refreshed-args)]
+               {:calls (conj calls {:method method
+                                    :args refreshed-args
+                                    :return ret})
+                :state (p/next-state ret)}))
+           {:calls []
+            :state (p/initial-state model)}
+           calls)))
+
 (defn verify
   "Verify an implementation of a protocol against a model. Returns a _property_, put it in a `defspec`
 
@@ -309,7 +331,8 @@
                    :or {num-calls 10}
                    :as _opts}]
   (prop/for-all [calls (gen-calls model (p/initial-state model) num-calls)]
-                (let [impl (impl-f)
+                (let [calls (refresh-calls model calls)
+                      impl (impl-f)
                       executed-calls (atom [])]
                   (try
                     (every? (fn [call]

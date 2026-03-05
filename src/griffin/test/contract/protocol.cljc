@@ -21,7 +21,9 @@
   (args [this state]
     "Return a generator for arguments to call the method in the current state. Do not include `this`")
   (precondition [this state args]
-    "Return truthy if it is valid to call this method with these args in the current state."))
+    "Return truthy if it is valid to call this method with these args in the current state.")
+  (refresh-args [this args]
+    "Given args, return refreshed args with new unique values (e.g. fresh UUIDs). Used during shrinking in verify to avoid conflicts with external APIs."))
 
 (defprotocol Model
   :extend-via-metadata true
